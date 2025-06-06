@@ -8,18 +8,35 @@
   <% cssFiles.forEach(function(cssFile) { %>
     <link rel="stylesheet" href="<%= cssFile %>" type="text/css" media="screen"/>
   <% }) %>
+  <% if (importMap) { %>
+    <script type="importmap">
+    <%- JSON.stringify(importMap, null, 2) %>
+    </script>
+  <% } %>
 </head>
 <body>
   <% jasmineJsFiles.forEach(function(jsFile) { %>
     <script src="<%= jsFile %>" type="text/javascript"></script>
   <% }) %>
-  <% userJsFiles.forEach(function(jsFile) { %>
-    <% if (jsFile.endsWith('.mjs')) { %>
-      <script type="module">_jasmine_loadEsModule('<%= jsFile %>')</script>
-    <% } else { %>
-      <script src="<%= jsFile %>" type="text/javascript"></script>
-    <% } %>
-  <% }) %>
+  <% if (enableTopLevelAwait) { %>
+    <script type="module">
+      await _jasmine_loadWithTopLevelAwaitSupport([
+        <% userJsFiles.forEach(function(jsFile) { %>
+          '<%= jsFile %>',
+        <% }) %>
+      ], '<%=esmFilenameExtension%>');
+    </script>
+  <% } else { %>
+    <% userJsFiles.forEach(function(jsFile) { %>
+      <% if (jsFile.endsWith(esmFilenameExtension)) { %>
+        <script src="<%= jsFile %>" type="module"></script>
+      <% } else if (modulesWithSideEffectsInSrcFiles) { %>
+        <script src="<%= jsFile %>" type="text/javascript" defer></script>
+      <% } else { %>
+        <script src="<%= jsFile %>" type="text/javascript"></script>
+      <% } %>
+    <% }) %>
+  <% } %>
 
 <div id="jasmine_content"></div>
 </body>

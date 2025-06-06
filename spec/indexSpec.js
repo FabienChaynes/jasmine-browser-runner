@@ -13,16 +13,19 @@ describe('index', function() {
           'start',
           'stop',
           'port',
+          'scheme',
+          'hostname',
         ]));
         server.start.and.callFake(() => Promise.reject(new Error('stop here')));
         const runner = jasmine.createSpyObj('Runner', ['run']);
         const buildWebdriver = jasmine
           .createSpy('buildWebdriver')
           .and.callFake(buildStubWebdriver);
+        this.serverCtor = jasmine
+          .createSpy('Server constructor')
+          .and.returnValue(server);
         this.deps = {
-          Server: function() {
-            return server;
-          },
+          Server: this.serverCtor,
           Runner: function() {
             return runner;
           },
@@ -35,52 +38,59 @@ describe('index', function() {
         };
       });
 
-      describe('When not using Sauce Connect', function() {
+      describe('When not using or remote grid', function() {
         it('uses the specified port', async function() {
           const promise = runSpecs({ port: 12345 }, this.deps);
           await this.waitForServerStart(promise);
 
-          expect(this.server.start).toHaveBeenCalledWith({ port: 12345 });
+          expect(this.serverCtor).toHaveBeenCalledWith(
+            jasmine.objectContaining({ port: 12345 })
+          );
         });
 
         it('tells the server to pick a port if nothing is specified', async function() {
           const promise = runSpecs({}, this.deps);
           await this.waitForServerStart(promise);
 
-          expect(this.server.start).toHaveBeenCalledWith({ port: 0 });
+          expect(this.serverCtor).toHaveBeenCalledWith(
+            jasmine.objectContaining({ port: 0 })
+          );
         });
       });
 
-      describe('When using Sauce Connect', function() {
+      describe('When using remote grid', function() {
         it('uses port 5555', async function() {
           const promise = runSpecs(
             {
               browser: {
-                useSauce: true,
+                useRemoteSeleniumGrid: true,
               },
             },
             this.deps
           );
           await this.waitForServerStart(promise);
 
-          expect(this.server.start).toHaveBeenCalledWith({ port: 5555 });
+          expect(this.serverCtor).toHaveBeenCalledWith(
+            jasmine.objectContaining({ port: 5555 })
+          );
         });
 
-        it('throws if a port is specified', async function() {
+        it('uses the specified port', async function() {
+          spyOn(console, 'warn');
           const promise = runSpecs(
             {
               browser: {
-                useSauce: true,
+                useRemoteSeleniumGrid: true,
               },
               port: 1234,
             },
             this.deps
           );
+          await this.waitForServerStart(promise);
 
-          await expectAsync(promise).toBeRejectedWithError(
-            "Can't specify a port when browser.useSauce is true"
+          expect(this.serverCtor).toHaveBeenCalledWith(
+            jasmine.objectContaining({ port: 1234 })
           );
-          expect(this.server.start).not.toHaveBeenCalled();
         });
       });
     });
@@ -404,6 +414,111 @@ describe('index', function() {
         expect(setExitCode).toHaveBeenCalledWith(2);
       });
 
+      describe('Sending the result to Saucelabs', function() {
+        function hasSaucelabsResultReporting(browserConfig) {
+          it('sets sauce:job-result to true when the run passes', async function() {
+            const webdriver = await runWithSauceWithOverallStatus('passed');
+            expect(webdriver.executeScript).toHaveBeenCalledWith(
+              'sauce:job-result=true'
+            );
+          });
+
+          it('sets sauce:job-result to false when the run fails', async function() {
+            const webdriver = await runWithSauceWithOverallStatus('failed');
+            expect(webdriver.executeScript).toHaveBeenCalledWith(
+              'sauce:job-result=false'
+            );
+          });
+
+          it('sets sauce:job-result to false when the run is incomplete', async function() {
+            const webdriver = await runWithSauceWithOverallStatus('incomplete');
+            expect(webdriver.executeScript).toHaveBeenCalledWith(
+              'sauce:job-result=false'
+            );
+          });
+
+          async function runWithSauceWithOverallStatus(overallStatus) {
+            const server = buildSpyServer();
+            const runner = jasmine.createSpyObj('Runner', ['run']);
+            runner.run.and.returnValue(Promise.resolve({ overallStatus }));
+            const webdriver = jasmine.createSpyObj('webdriver', [
+              'close',
+              'executeScript',
+            ]);
+            webdriver.close.and.returnValue(Promise.resolve());
+            webdriver.executeScript.and.returnValue(Promise.resolve());
+            await runSpecs(
+              { browser: browserConfig },
+              {
+                Server: function() {
+                  return server;
+                },
+                Runner: function() {
+                  return runner;
+                },
+                buildWebdriver: () => webdriver,
+              }
+            );
+
+            return webdriver;
+          }
+        }
+
+        function doesNotHaveSaucelabsResultReporting(browserConfig) {
+          it('does not set sauce:job-result', async function() {
+            const server = buildSpyServer();
+            const runner = jasmine.createSpyObj('Runner', ['run']);
+            runner.run.and.returnValue(
+              Promise.resolve({ overallStatus: 'passed' })
+            );
+            const webdriver = jasmine.createSpyObj('webdriver', [
+              'close',
+              'executeScript',
+            ]);
+            webdriver.close.and.returnValue(Promise.resolve());
+            webdriver.executeScript.and.returnValue(Promise.resolve());
+            await runSpecs(
+              { browser: browserConfig },
+              {
+                Server: function() {
+                  return server;
+                },
+                Runner: function() {
+                  return runner;
+                },
+                buildWebdriver: () => webdriver,
+              }
+            );
+
+            expect(webdriver.executeScript).not.toHaveBeenCalledWith(
+              jasmine.stringContaining('sauce:job-result')
+            );
+          });
+        }
+
+        describe('When the remote grid URL includes saucelabs.com', function() {
+          hasSaucelabsResultReporting({
+            useRemoteSeleniumGrid: true,
+            remoteSeleniumGrid: {
+              url: 'https://ondemand.saucelabs.com/wd/hub',
+            },
+          });
+        });
+
+        describe('When the remote grid URL does not include saucelabs.com', function() {
+          doesNotHaveSaucelabsResultReporting({
+            useRemoteSeleniumGrid: true,
+            remoteSeleniumGrid: {
+              url: 'https://some-other-grid.example.com/',
+            },
+          });
+        });
+
+        describe('In all other cases', function() {
+          doesNotHaveSaucelabsResultReporting({});
+        });
+      });
+
       it('stops the server', async function() {
         const server = buildSpyServer();
         const runner = jasmine.createSpyObj('Runner', ['run']);
@@ -441,6 +556,8 @@ describe('index', function() {
           'start',
           'stop',
           'port',
+          'scheme',
+          'hostname',
         ]);
         server.start.and.returnValue(Promise.resolve(server));
         server.stop.and.returnValue(Promise.resolve());
@@ -475,7 +592,13 @@ describe('index', function() {
     });
 
     it('does not launch a browser if the server fails to start', async function() {
-      const server = jasmine.createSpyObj('Server', ['start', 'stop', 'port']);
+      const server = jasmine.createSpyObj('Server', [
+        'start',
+        'stop',
+        'port',
+        'scheme',
+        'hostname',
+      ]);
       server.start.and.returnValue(Promise.reject(new Error('nope')));
       const runner = jasmine.createSpyObj('Runner', ['run']);
       const buildWebdriver = jasmine
@@ -501,7 +624,13 @@ describe('index', function() {
     });
 
     it('stops the browser and server if the runner fails to start', async function() {
-      const server = jasmine.createSpyObj('Server', ['start', 'stop', 'port']);
+      const server = jasmine.createSpyObj('Server', [
+        'start',
+        'stop',
+        'port',
+        'scheme',
+        'hostname',
+      ]);
       server.start.and.returnValue(Promise.resolve(server));
       server.stop.and.returnValue(Promise.resolve());
       server.port.and.returnValue(0);
@@ -542,9 +671,16 @@ function buildStubWebdriver() {
 }
 
 function buildSpyServer() {
-  const server = jasmine.createSpyObj('Server', ['start', 'stop', 'port']);
+  const server = jasmine.createSpyObj('Server', [
+    'start',
+    'stop',
+    'port',
+    'scheme',
+    'hostname',
+  ]);
   server.start.and.returnValue(Promise.resolve(server));
   server.stop.and.returnValue(Promise.resolve());
   server.port.and.returnValue(0);
+  server.scheme.and.returnValue('http');
   return server;
 }

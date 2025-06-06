@@ -1,18 +1,25 @@
-const path = require('path'),
-  http = require('http'),
-  Server = require('../lib/server');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const https = require('https');
+const Server = require('../lib/server');
 
 function getFile(url) {
   return new Promise(function(resolve, reject) {
-    http
-      .get(url, function(response) {
+    const requestModule = url.startsWith('https:') ? https : http;
+    const options = {
+      // Allow testing with a self-signed TLS certificate.
+      rejectUnauthorized: false,
+    };
+    requestModule
+      .get(url, options, function(response) {
         if (response.statusCode !== 200) {
           reject(
             new Error(`${url} failed with status code ${response.statusCode}`)
           );
         }
 
-        var rawData = '';
+        let rawData = '';
         response.on('data', function(chunk) {
           rawData += chunk;
         });
@@ -22,6 +29,27 @@ function getFile(url) {
       })
       .on('error', reject);
   });
+}
+
+function getIP() {
+  const interfaces = os.networkInterfaces();
+
+  for (const addressInfos of Object.values(interfaces)) {
+    for (const addressInfo of addressInfos) {
+      const isIPv4 =
+        // Node 18.0-18.3
+        addressInfo.family === 4 ||
+        // Node >= 18.4
+        addressInfo.family === 'IPv4';
+
+      if (isIPv4 && !addressInfo.internal) {
+        return addressInfo.address;
+      }
+    }
+  }
+
+  // Can't find a non-localhost IP.
+  return '127.0.0.1';
 }
 
 // Note: various payload specs check for \r?\n instead of either \n or os.EOL
@@ -46,6 +74,32 @@ describe('server', function() {
     const server = new Server({ jasmineCore: this.fakeJasmine });
 
     expect(server.projectBaseDir).toEqual(path.resolve());
+  });
+
+  it('allows absolute paths for srcDir and specDir', async function() {
+    spyOn(console, 'log');
+
+    const projectDir = path.resolve(__dirname, 'fixtures/sampleProject');
+    const srcDir = path.resolve(projectDir, 'sources');
+    const specDir = path.resolve(projectDir, 'specs');
+    const server = new Server({
+      srcDir,
+      specDir,
+      srcFiles: ['thing2.js', '**/*.js'],
+      helpers: ['helpers/**/*.js'],
+      specFiles: ['**/*[sS]pec.js'],
+      port: 0,
+    });
+
+    await server.start();
+
+    const baseUrl = `http://localhost:${server.port()}`;
+
+    // Even though the base dir isn't set on the server, we can still get the
+    // source file through the absolute path.
+    expect(server.projectBaseDir).toEqual(path.resolve());
+    expect(server.projectBaseDir).not.toEqual(projectDir);
+    await getFile(baseUrl + '/__src__/thing2.js');
   });
 
   it('appends specified css files after Jasmines own', function() {
@@ -124,7 +178,7 @@ describe('server', function() {
         '/__boot__/bootboot.js',
         '/__config__/config.js',
         '/__boot__/boot2.js',
-        '/__support__/loadEsModule.js',
+        '/__support__/loaders.js',
         '/__support__/batchReporter.js',
       ]);
     });
@@ -254,11 +308,12 @@ describe('server', function() {
             specDir: 'specs',
             helpers: ['helpers/**/*.js'],
             specFiles: ['**/*[sS]pec.js'],
+            port: 0,
           },
           extraOptions
         );
         this.server = new Server(options);
-        await this.server.start({ port: 0 });
+        await this.server.start();
       };
     });
 
@@ -279,30 +334,30 @@ describe('server', function() {
       });
       const baseUrl = `http://localhost:${this.server.port()}`;
 
-      var jazz = await getFile(baseUrl + '/__jasmine__/jazz.js');
+      const jazz = await getFile(baseUrl + '/__jasmine__/jazz.js');
       expect(jazz).toMatch(/^Jazzy\r?\n$/);
 
-      var min = await getFile(baseUrl + '/__jasmine__/min.js');
+      const min = await getFile(baseUrl + '/__jasmine__/min.js');
       expect(min).toMatch(/^minified\r?\n$/);
 
-      var bootboot = await getFile(baseUrl + '/__boot__/bootboot.js');
+      const bootboot = await getFile(baseUrl + '/__boot__/bootboot.js');
       expect(bootboot).toMatch(/^booot\r?\n$/);
 
-      var config = await getFile(baseUrl + '/__config__/config.js');
+      const config = await getFile(baseUrl + '/__config__/config.js');
       expect(config).toContain(
         'jasmine.getEnv().configure({"someProp":"someVal"})'
       );
 
-      var boot2 = await getFile(baseUrl + '/__boot__/boot2.js');
+      const boot2 = await getFile(baseUrl + '/__boot__/boot2.js');
       expect(boot2).toMatch(/^Boot the second\r?\n$/);
 
-      var css = await getFile(baseUrl + '/__jasmine__/css.css');
+      const css = await getFile(baseUrl + '/__jasmine__/css.css');
       expect(css).toMatch(/^CSS\r?\n$/);
 
-      var two = await getFile(baseUrl + '/__jasmine__/two.css');
+      const two = await getFile(baseUrl + '/__jasmine__/two.css');
       expect(two).toMatch(/^two csses\r?\n$/);
 
-      var image = await getFile(baseUrl + '/__images__/things.txt');
+      const image = await getFile(baseUrl + '/__images__/things.txt');
       expect(image).toMatch(/^pretend I'm an image\r?\n$/);
     });
 
@@ -313,7 +368,7 @@ describe('server', function() {
 
       const baseUrl = `http://localhost:${this.server.port()}`;
 
-      var config = await getFile(baseUrl + '/__config__/config.js');
+      const config = await getFile(baseUrl + '/__config__/config.js');
       expect(config).toContain('jasmine.getEnv().configure({})');
     });
 
@@ -321,10 +376,10 @@ describe('server', function() {
       await this.startServer();
       const baseUrl = `http://localhost:${this.server.port()}`;
 
-      var thing1 = await getFile(baseUrl + '/__src__/thing1.js');
+      const thing1 = await getFile(baseUrl + '/__src__/thing1.js');
       expect(thing1).toMatch(/^thing the first\r?\n$/);
 
-      var spec = await getFile(baseUrl + '/__spec__/iLikeSpec.js');
+      const spec = await getFile(baseUrl + '/__spec__/iLikeSpec.js');
       expect(spec).toMatch(/^I like specs\r?\n$/);
     });
 
@@ -332,7 +387,7 @@ describe('server', function() {
       await this.startServer();
       const baseUrl = `http://localhost:${this.server.port()}`;
 
-      var html = await getFile(baseUrl);
+      const html = await getFile(baseUrl);
       expect(html).toContain('/__jasmine__/jazz.js');
       expect(html).toContain('/__jasmine__/min.js');
       expect(html).toContain('/__boot__/bootboot.js');
@@ -349,39 +404,257 @@ describe('server', function() {
       await this.startServer();
       const baseUrl = `http://localhost:${this.server.port()}`;
 
-      var html = await getFile(baseUrl);
-      expect(html).toContain('/__support__/loadEsModule.js');
+      const html = await getFile(baseUrl);
+      expect(html).toContain('/__support__/loaders.js');
+    });
+
+    it('starts a server with TLS', async function() {
+      const tlsDir = path.resolve(__dirname, 'fixtures');
+      await this.startServer({
+        tlsCert: path.resolve(tlsDir, 'tls-cert.pem'),
+        tlsKey: path.resolve(tlsDir, 'tls-key.pem'),
+      });
+      const baseUrl = `https://localhost:${this.server.port()}`;
+
+      const jazz = await getFile(baseUrl + '/__jasmine__/jazz.js');
+      expect(jazz).toMatch(/^Jazzy\r?\n$/);
+    });
+
+    it('starts a server with the specified hostname', async function() {
+      const ip = getIP();
+
+      if (ip === '127.0.0.1') {
+        pending('Cannot test hostname without a non-localhost interface.');
+      }
+
+      await this.startServer({
+        hostname: ip,
+        listenAddress: ip,
+      });
+
+      // The server is listening on a specific IP.  We should be able to use
+      // that, but not localhost.
+      const workingBaseUrl = `http://${ip}:${this.server.port()}`;
+      const nonWorkingBaseUrl = `http://localhost:${this.server.port()}`;
+
+      const jazz = await getFile(workingBaseUrl + '/__jasmine__/jazz.js');
+      expect(jazz).toMatch(/^Jazzy\r?\n$/);
+
+      try {
+        await getFile(nonWorkingBaseUrl);
+        fail('We should not be listening on localhost');
+      } catch (error) {
+        expect(error.code).toBe('ECONNREFUSED');
+      }
+    });
+
+    describe('Passing listen options to the Node http/https server', function() {
+      // These tests are less integrationy but more comprehensive than
+      // "starts a server with the specified hostname" above. They work even
+      // when run on a machine with only one network interface.
+      function makeMockNodeServer(name) {
+        const m = jasmine.createSpyObj(name, [
+          'createServer',
+          'listen',
+          'address',
+          'close',
+        ]);
+        m.createServer.and.returnValue(m);
+        m.address.and.returnValue({});
+
+        // In functions that take callbacks, go async to match the behavior of
+        // the real http/https.
+        m.listen.and.callFake(function(listenOptions, callback) {
+          setTimeout(callback);
+          return m;
+        });
+
+        m.close.and.callFake(function(callback) {
+          setTimeout(callback);
+        });
+
+        return m;
+      }
+
+      function baseCtorOptions() {
+        return {
+          // Minimal configuration to not error out
+          projectBaseDir: path.resolve(__dirname, 'fixtures/sampleProject'),
+          srcDir: 'sources',
+          specDir: 'specs',
+        };
+      }
+
+      describe('When listenAddress is not specified', function() {
+        it('listens to localhost', async function() {
+          const options = baseCtorOptions();
+          const http = makeMockNodeServer('http');
+          this.server = new Server(options, { http });
+
+          await this.server.start();
+
+          expect(http.listen).toHaveBeenCalledWith(
+            jasmine.objectContaining({ host: 'localhost' }),
+            jasmine.any(Function)
+          );
+        });
+      });
+
+      describe('When listenAddress is specified', function() {
+        it('listens to the specified listenAddress', async function() {
+          const options = baseCtorOptions();
+          options.listenAddress = 'specific.example.com';
+          const http = makeMockNodeServer('http');
+          this.server = new Server(options, { http });
+
+          await this.server.start();
+
+          expect(http.listen).toHaveBeenCalledWith(
+            jasmine.objectContaining({ host: 'specific.example.com' }),
+            jasmine.any(Function)
+          );
+        });
+      });
+
+      describe('When listenAddress is "*"', function() {
+        it('listens to all interfaces', async function() {
+          const options = baseCtorOptions();
+          options.listenAddress = '*';
+          const http = makeMockNodeServer('http');
+          this.server = new Server(options, { http });
+
+          await this.server.start();
+
+          expect(http.listen).toHaveBeenCalledWith(
+            jasmine.objectContaining({ host: '' }),
+            jasmine.any(Function)
+          );
+        });
+      });
     });
 
     describe('loading specs and helpers', function() {
-      it('loads .js files as regular scripts', async function() {
-        await this.startServer();
-        const baseUrl = `http://localhost:${this.server.port()}`;
+      function behavesLikeTopLevelAwaitDisabled() {
+        it('loads .js files as regular scripts', async function() {
+          await this.startServer(this.extraOptions);
+          const baseUrl = `http://localhost:${this.server.port()}`;
 
-        var html = await getFile(baseUrl);
-        expect(html).toContain(
-          '<script src="/__spec__/helpers/halp.js" type="text/javascript">'
-        );
-        expect(html).toContain(
-          '<script src="/__spec__/imAspec.js" type="text/javascript">'
-        );
+          const html = await getFile(baseUrl);
+          expect(html).toContain(
+            '<script src="/__spec__/helpers/halp.js" type="text/javascript">'
+          );
+          expect(html).toContain(
+            '<script src="/__spec__/imAspec.js" type="text/javascript">'
+          );
+        });
+
+        it('loads .mjs spec and helper files as ES modules', async function() {
+          await this.startServer({
+            ...this.extraOptions,
+            srcFiles: ['**/*.mjs'],
+            helpers: ['helpers/**/*.mjs'],
+            specFiles: ['**/*[sS]pec.mjs'],
+          });
+          const baseUrl = `http://localhost:${this.server.port()}`;
+
+          const html = await getFile(baseUrl);
+          expect(html).toContain(
+            '<script src="/__spec__/helpers/esm.mjs" type="module"></script>'
+          );
+          expect(html).toContain(
+            '<script src="/__spec__/esmSpec.mjs" type="module"></script>'
+          );
+        });
+
+        describe('And a nonstandard ES module estension is specified', function() {
+          beforeEach(function() {
+            this.extraOptions.esmFilenameExtension = '.mod';
+          });
+
+          behavesLikeTopLevelAwaitDisabledWithNonstandardEsmExtension();
+        });
+      }
+
+      function behavesLikeTopLevelAwaitDisabledWithNonstandardEsmExtension() {
+        it('loads .js files as regular scripts', async function() {
+          await this.startServer(this.extraOptions);
+          const baseUrl = `http://localhost:${this.server.port()}`;
+
+          const html = await getFile(baseUrl);
+          expect(html).toContain(
+            '<script src="/__spec__/helpers/halp.js" type="text/javascript">'
+          );
+          expect(html).toContain(
+            '<script src="/__spec__/imAspec.js" type="text/javascript">'
+          );
+        });
+
+        it('loads spec and helper files with the ESM estension as ES modules', async function() {
+          await this.startServer({
+            ...this.extraOptions,
+            srcFiles: ['**/*.mod'],
+            helpers: ['helpers/**/*.mod'],
+            specFiles: ['**/*[sS]pec.mod'],
+          });
+          const baseUrl = `http://localhost:${this.server.port()}`;
+
+          const html = await getFile(baseUrl);
+          expect(html).toContain(
+            '<script src="/__spec__/helpers/esm.mod" type="module"></script>'
+          );
+          expect(html).toContain(
+            '<script src="/__spec__/esmSpec.mod" type="module"></script>'
+          );
+        });
+      }
+
+      describe('When enableTopLevelAwait is undefined', function() {
+        beforeEach(function() {
+          this.extraOptions = {};
+        });
+
+        behavesLikeTopLevelAwaitDisabled();
       });
 
-      it('loads .mjs files as ES modules', async function() {
-        await this.startServer({
-          srcFiles: ['**/*.mjs'],
-          helpers: ['helpers/**/*.mjs'],
-          specFiles: ['**/*[sS]pec.mjs'],
+      describe('When enableTopLevelAwait is false', function() {
+        beforeEach(function() {
+          this.extraOptions = { enableTopLevelAwait: false };
         });
-        const baseUrl = `http://localhost:${this.server.port()}`;
 
-        var html = await getFile(baseUrl);
-        expect(html).toContain(
-          '<script type="module">_jasmine_loadEsModule(\'/__spec__/helpers/esm.mjs\')</script>'
-        );
-        expect(html).toContain(
-          '<script type="module">_jasmine_loadEsModule(\'/__spec__/esmSpec.mjs\')</script>'
-        );
+        behavesLikeTopLevelAwaitDisabled();
+      });
+
+      describe('When enableTopLevelAwait is true', function() {
+        it('uses _jasmine_loadWithTopLevelAwaitSupport', async function() {
+          await this.startServer({
+            enableTopLevelAwait: true,
+            srcFiles: ['**/*.mjs'],
+            helpers: ['helpers/**/*.?(m)js'],
+            specFiles: ['**/*[sS]pec.?(m)js'],
+          });
+          const baseUrl = `http://localhost:${this.server.port()}`;
+
+          const html = await getFile(baseUrl);
+
+          expect(html).toContain('_jasmine_loadWithTopLevelAwaitSupport');
+
+          expect(html).toContain('/__spec__/helpers/esm.mjs');
+          expect(html).not.toContain(
+            '<script src="/__spec__/helpers/halp.js" type="text/javascript">'
+          );
+          expect(html).toContain('/__spec__/imAspec.js');
+          expect(html).not.toContain(
+            '<script src="/__spec__/imAspec.js" type="text/javascript">'
+          );
+          expect(html).toContain('/__spec__/helpers/esm.mjs');
+          expect(html).not.toContain(
+            '<script src="/__spec__/helpers/esm.mjs" type="module"></script>'
+          );
+          expect(html).toContain('/__spec__/esmSpec.mjs');
+          expect(html).not.toContain(
+            '<script src="/__spec__/esmSpec.mjs" type="module"></script>'
+          );
+        });
       });
     });
 
@@ -390,7 +663,7 @@ describe('server', function() {
         await this.startServer();
         const baseUrl = `http://localhost:${this.server.port()}`;
 
-        var html = await getFile(baseUrl);
+        const html = await getFile(baseUrl);
         expect(html).toContain(
           '<script src="/__src__/thing1.js" type="text/javascript">'
         );
@@ -406,37 +679,8 @@ describe('server', function() {
         });
         const baseUrl = `http://localhost:${this.server.port()}`;
 
-        var html = await getFile(baseUrl);
+        const html = await getFile(baseUrl);
         expect(html).not.toContain('/__src__/esm.mjs');
-      });
-    });
-
-    describe('The useHtmlReporter option', function() {
-      it('does not remove the HTML reporter when undefined', async function() {
-        await this.startServer({});
-
-        const baseUrl = `http://localhost:${this.server.port()}`;
-
-        const html = await getFile(baseUrl);
-        expect(html).not.toContain('/__support__/clearReporters.js');
-      });
-
-      it('does not remove the HTML reporter when true', async function() {
-        await this.startServer({ useHtmlReporter: true });
-
-        const baseUrl = `http://localhost:${this.server.port()}`;
-
-        const html = await getFile(baseUrl);
-        expect(html).not.toContain('/__support__/clearReporters.js');
-      });
-
-      it('removes the HTML reporter when false', async function() {
-        await this.startServer({ useHtmlReporter: false });
-
-        const baseUrl = `http://localhost:${this.server.port()}`;
-
-        const html = await getFile(baseUrl);
-        expect(html).toContain('/__support__/clearReporters.js');
       });
     });
 
@@ -445,79 +689,209 @@ describe('server', function() {
 
       const baseUrl = `http://localhost:${this.server.port()}`;
 
-      var html = await getFile(baseUrl);
+      const html = await getFile(baseUrl);
       expect(html).toContain('/__support__/batchReporter.js');
     });
   });
 
-  describe('Backslash handling', function() {
-    describe('When running on Windows', function() {
-      beforeEach(function() {
-        spyOn(console, 'warn');
-      });
+  it('uses specified Express middleware', async function() {
+    spyOn(console, 'log');
 
-      function windows() {
-        return 'win32';
-      }
+    const app = jasmine.createSpyObj('app', ['use', 'get', 'listen']);
+    app.listen.and.callFake(function(port, cb) {
+      setImmediate(cb);
+      return {
+        address() {
+          return {};
+        },
+      };
+    });
+    const fakeExpress = function() {
+      return app;
+    };
+    fakeExpress.static = function() {};
+    function middleware1() {}
+    function middleware2() {}
 
-      function testGlobWarning(fieldName) {
-        const options = { platform: windows };
-        options[fieldName] = ['foo\\*.js', 'foo\\bar\\exact.js'];
-        new Server(options);
-        expect(console.warn).toHaveBeenCalledWith(
-          'Backslashes in ' +
-            'file paths behave inconsistently between platforms and might not be ' +
-            'treated as directory separators in a future version. Consider ' +
-            'changing foo\\*.js to foo/*.js.'
-        );
-        expect(console.warn).toHaveBeenCalledWith(
-          'Backslashes in ' +
-            'file paths behave inconsistently between platforms and might not be ' +
-            'treated as directory separators in a future version. Consider ' +
-            'changing foo\\bar\\exact.js to foo/bar/exact.js.'
-        );
-      }
-
-      it('warns about backslashes in srcFiles', function() {
-        testGlobWarning('srcFiles');
-      });
-
-      it('warns about backslashes in specFiles', function() {
-        testGlobWarning('specFiles');
-      });
-
-      it('warns about backslashes in helpers', function() {
-        testGlobWarning('helpers');
-      });
+    const server = new Server({
+      projectBaseDir: path.resolve(__dirname, 'fixtures/importMap'),
+      jasmineCore: this.fakeJasmine,
+      express: fakeExpress,
+      srcDir: 'src',
+      specDir: 'spec',
+      middleware: {
+        '/foo': middleware1,
+        '/bar': middleware2,
+      },
+      port: 0,
     });
 
-    describe('When not running on Windows', function() {
-      beforeEach(function() {
-        spyOn(console, 'warn');
+    await server.start();
+
+    expect(app.use).toHaveBeenCalledWith('/foo', middleware1);
+    expect(app.use).toHaveBeenCalledWith('/bar', middleware2);
+  });
+
+  describe('When an importMap is provided', function() {
+    beforeEach(function() {
+      spyOn(console, 'log');
+    });
+
+    it('includes an import map with both imports and scopes', async function() {
+      const server = new Server({
+        projectBaseDir: path.resolve(__dirname, 'fixtures/importMap'),
+        jasmineCore: this.fakeJasmine,
+        srcDir: 'src',
+        srcFiles: ['**/*.mjs'],
+        specDir: 'spec',
+        specFiles: ['**/*[sS]pec.mjs'],
+        importMap: {
+          imports: {
+            'some-lib': 'some-lib/path/to/index.mjs',
+            'some-lib/': 'some-lib/path/',
+            'absolute-lib':
+              'https://fakecdn.whatever/absolute-lib/dist/index.mjs',
+          },
+          scopes: {
+            '/someScope/': {
+              'some-lib': 'some-lib/different/path/to/index.mjs',
+              'some-lib/': 'some-lib/different/path/',
+              'absolute-lib':
+                'https://fakecdn.whatever/absolute-lib/dist/index.mjs',
+            },
+          },
+        },
+        port: 0,
       });
 
-      function notWindows() {
-        return 'Ultrix 4.5';
+      try {
+        await server.start();
+        const baseUrl = `http://localhost:${server.port()}`;
+        const html = await getFile(baseUrl);
+
+        expect(html).toMatch(
+          new RegExp(
+            [
+              /<script type="importmap">/,
+              /\s*{/,
+              /\s*"imports": {/,
+              /\s*"some-lib": ".*some-lib\/path\/to\/index\.mjs",/,
+              /\s*"some-lib\/": ".*some-lib\/path\/",/,
+              /\s*"absolute-lib": "https:\/\/fakecdn\.whatever\/absolute-lib\/dist\/index.mjs"/,
+              /\s*},/,
+              /\s*"scopes": {/,
+              /\s*"\/someScope\/": {/,
+              /\s*"some-lib": ".*some-lib\/different\/path\/to\/index.mjs",/,
+              /\s*"some-lib\/": ".*some-lib\/different\/path\/",/,
+              /\s*"absolute-lib": "https:\/\/fakecdn\.whatever\/absolute-lib\/dist\/index\.mjs"/,
+              /\s*}/,
+              /\s*}/,
+              /\s*}/,
+              /\s*<\/script>/,
+            ]
+              .map(x => x.source)
+              .join('')
+          )
+        );
+      } finally {
+        await server.stop();
       }
+    });
 
-      function testGlobWarning(fieldName) {
-        const options = { platform: notWindows };
-        options[fieldName] = ['foo\\*.js', 'foo\\bar\\exact.js'];
-        new Server(options);
-        expect(console.warn).not.toHaveBeenCalled();
+    it('includes an import map with imports only', async function() {
+      const server = new Server({
+        projectBaseDir: path.resolve(__dirname, 'fixtures/importMap'),
+        jasmineCore: this.fakeJasmine,
+        srcDir: 'src',
+        srcFiles: ['**/*.mjs'],
+        specDir: 'spec',
+        specFiles: ['**/*[sS]pec.mjs'],
+        importMap: {
+          imports: {
+            'some-lib': 'some-lib/path/to/index.mjs',
+            'some-lib/': 'some-lib/path/',
+            'absolute-lib':
+              'https://fakecdn.whatever/absolute-lib/dist/index.mjs',
+          },
+        },
+        port: 0,
+      });
+
+      try {
+        await server.start();
+        const baseUrl = `http://localhost:${server.port()}`;
+        const html = await getFile(baseUrl);
+
+        expect(html).toMatch(
+          new RegExp(
+            [
+              /<script type="importmap">/,
+              /\s*{/,
+              /\s*"imports": {/,
+              /\s*"some-lib": ".*some-lib\/path\/to\/index\.mjs",/,
+              /\s*"some-lib\/": ".*some-lib\/path\/",/,
+              /\s*"absolute-lib": "https:\/\/fakecdn\.whatever\/absolute-lib\/dist\/index.mjs"/,
+              /\s*}/,
+              /\s*}/,
+              /\s*<\/script>/,
+            ]
+              .map(x => x.source)
+              .join('')
+          )
+        );
+      } finally {
+        await server.stop();
       }
+    });
 
-      it('warns about backslashes in srcFiles', function() {
-        testGlobWarning('srcFiles');
+    it('includes an import map with scopes only', async function() {
+      const server = new Server({
+        projectBaseDir: path.resolve(__dirname, 'fixtures/importMap'),
+        jasmineCore: this.fakeJasmine,
+        srcDir: 'src',
+        srcFiles: ['**/*.mjs'],
+        specDir: 'spec',
+        specFiles: ['**/*[sS]pec.mjs'],
+        importMap: {
+          scopes: {
+            '/someScope/': {
+              'some-lib': 'some-lib/different/path/to/index.mjs',
+              'some-lib/': 'some-lib/different/path/',
+              'absolute-lib':
+                'https://fakecdn.whatever/absolute-lib/dist/index.mjs',
+            },
+          },
+        },
+        port: 0,
       });
 
-      it('warns about backslashes in specFiles', function() {
-        testGlobWarning('specFiles');
-      });
+      try {
+        await server.start();
+        const baseUrl = `http://localhost:${server.port()}`;
+        const html = await getFile(baseUrl);
 
-      it('warns about backslashes in helpers', function() {
-        testGlobWarning('helpers');
-      });
+        expect(html).toMatch(
+          new RegExp(
+            [
+              /<script type="importmap">/,
+              /\s*{/,
+              /\s*"scopes": {/,
+              /\s*"\/someScope\/": {/,
+              /\s*"some-lib": ".*some-lib\/different\/path\/to\/index.mjs",/,
+              /\s*"some-lib\/": ".*some-lib\/different\/path\/",/,
+              /\s*"absolute-lib": "https:\/\/fakecdn\.whatever\/absolute-lib\/dist\/index\.mjs"/,
+              /\s*}/,
+              /\s*}/,
+              /\s*}/,
+              /\s*<\/script>/,
+            ]
+              .map(x => x.source)
+              .join('')
+          )
+        );
+      } finally {
+        await server.stop();
+      }
     });
   });
 });

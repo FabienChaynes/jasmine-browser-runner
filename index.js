@@ -1,8 +1,8 @@
-const ConsoleReporter = require('./lib/console_reporter'),
-  webdriverModule = require('./lib/webdriver'),
-  Server = require('./lib/server'),
-  Runner = require('./lib/runner'),
-  ModuleLoader = require('./lib/moduleLoader');
+const ConsoleReporter = require('./lib/console_reporter');
+const webdriverModule = require('./lib/webdriver');
+const Server = require('./lib/server');
+const Runner = require('./lib/runner');
+const ModuleLoader = require('./lib/moduleLoader');
 
 async function createReporters(options, deps) {
   const result = [];
@@ -58,13 +58,12 @@ module.exports = {
   /**
    * Starts a {@link Server} that will serve the specs and supporting files via HTTP.
    * @param {ServerCtorOptions} options to use to construct the server
-   * @param {ServerStartOptions} serverOptions Options to use to start the server
    * @return {Promise<undefined>} A promise that is resolved when the server is
    * started.
    */
-  startServer: function(options, serverOptions) {
+  startServer: function(options) {
     const server = new Server(options);
-    return server.start(serverOptions || {});
+    return server.start();
   },
   /**
    * Runs the specs.
@@ -72,8 +71,18 @@ module.exports = {
    * @return {Promise<JasmineDoneInfo>} A promise that resolves to the {@link https://jasmine.github.io/api/edge/global.html#JasmineDoneInfo|overall result} when the suite has finished running.
    */
   runSpecs: async function(options, deps) {
-    options = options || {};
+    options = { ...options };
     deps = deps || {};
+    const useRemote = options.browser && options.browser.useRemoteSeleniumGrid;
+
+    if (!options.port) {
+      if (useRemote) {
+        options.port = 5555;
+      } else {
+        options.port = 0;
+      }
+    }
+
     const ServerClass = deps.Server || Server;
     const RunnerClass = deps.Runner || Runner;
     const buildWebdriver =
@@ -82,28 +91,17 @@ module.exports = {
     const server = new ServerClass(options);
 
     const reporters = await createReporters(options, deps);
-    const useSauce = options.browser && options.browser.useSauce;
-    let portRequest;
+    const useSauceCompletionReporting =
+      useRemote &&
+      options.browser.remoteSeleniumGrid?.url?.includes('saucelabs.com');
 
-    if (useSauce) {
-      if (options.port) {
-        throw new Error("Can't specify a port when browser.useSauce is true");
-      }
-
-      portRequest = 5555;
-    } else if (options.port) {
-      portRequest = options.port;
-    } else {
-      portRequest = 0;
-    }
-
-    await server.start({ port: portRequest });
+    await server.start();
 
     try {
       const webdriver = buildWebdriver(options.browser);
 
       try {
-        const host = `http://localhost:${server.port()}`;
+        const host = `${server.scheme()}://${server.hostname()}:${server.port()}`;
         const runner = new RunnerClass({ webdriver, reporters, host });
 
         console.log('Running tests in the browser...');
@@ -127,7 +125,7 @@ module.exports = {
 
         return details;
       } finally {
-        if (useSauce) {
+        if (useSauceCompletionReporting) {
           await webdriver.executeScript(
             `sauce:job-result=${process.exitCode === 0}`
           );
